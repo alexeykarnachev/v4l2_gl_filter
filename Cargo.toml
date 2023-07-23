@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+gst = { package = "gstreamer", version = "0.20.7" }
+gst-app = { package = "gstreamer-app", version = "0.20.7" }
+gst-video = { package = "gstreamer-video", version = "0.20.7" }
 glow = "0.12.3"
-jpeg-decoder = "0.3.0"
 sdl2 = "0.35.2"
-v4l = "0.14.0"
+anyhow = "1.0.72"
+glib = "0.17.10"
+derive_more = "0.99.17"
 
