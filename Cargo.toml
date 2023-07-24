@@ -7,6 +7,7 @@ edition = "2021"
 gst = { package = "gstreamer", version = "0.20.7" }
 gst-app = { package = "gstreamer-app", version = "0.20.7" }
 gst-video = { package = "gstreamer-video", version = "0.20.7" }
+gst-gl = { package = "gstreamer-gl", version = "0.20.0" }
 glow = "0.12.3"
 sdl2 = "0.35.2"
 anyhow = "1.0.72"
