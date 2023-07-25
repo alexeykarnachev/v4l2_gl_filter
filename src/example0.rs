@@ -1,87 +1,205 @@
-use std::io;
-use std::sync::{mpsc, RwLock};
-use std::thread;
-
+use anyhow::Error;
 use glow::HasContext;
+use gst::prelude::*;
+use gst_gl::GLPlatform;
+use mirror::GLMirrorFilter;
 use sdl2::event::Event;
-use v4l::buffer::Type;
-use v4l::io::traits::CaptureStream;
-use v4l::video::Capture;
-use v4l::Device;
-use v4l::{Format, FourCC};
 
-use v4l::prelude::*;
-use v4l::video::capture::Parameters;
+const FRAGMENT_SHADER: &str = r#"
+#ifdef GL_ES
+precision mediump float;
+#endif
 
-fn main() -> io::Result<()> {
-    // -------------------------------------------------------------------
-    // Initialize video device stream thread
-    let buffer_count = 4;
+// The filter draws a fullscreen quad and provides its coordinates here:
+varying vec2 v_texcoord;
 
-    let mut format: Format;
-    let params: Parameters;
+// The input texture is bound on a uniform sampler named `tex`:
+uniform sampler2D tex;
 
-    let mut dev =
-        RwLock::new(Device::new(0).expect("Failed to open device"));
-    {
-        let dev = dev.write().unwrap();
-        format = dev.format()?;
-        params = dev.params()?;
+void main () {
+    // Flip texture read coordinate on the x axis to create a mirror effect:
+    gl_FragColor = texture2D(tex, vec2(1.0 - v_texcoord.x, v_texcoord.y));
+}
+"#;
 
-        // try RGB3 first
-        format.fourcc = FourCC::new(b"RGB3");
-        format = dev.set_format(&format)?;
+mod mirror {
+    use std::sync::Mutex;
 
-        if format.fourcc != FourCC::new(b"RGB3") {
-            // fallback to Motion-JPEG
-            format.fourcc = FourCC::new(b"MJPG");
-            format = dev.set_format(&format)?;
+    use glib::once_cell::sync::Lazy;
+    use gst_base::subclass::BaseTransformMode;
+    use gst_gl::{
+        prelude::*,
+        subclass::{prelude::*, GLFilterMode},
+        *,
+    };
 
-            if format.fourcc != FourCC::new(b"MJPG") {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "neither RGB3 nor MJPG supported by the device, but required by this example!",
-                ));
-            }
+    use super::FRAGMENT_SHADER;
+
+    pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+        gst::DebugCategory::new(
+            "rsglmirrorfilter",
+            gst::DebugColorFlags::empty(),
+            Some("Rust GL Mirror Filter"),
+        )
+    });
+
+    glib::wrapper! {
+        pub struct GLMirrorFilter(ObjectSubclass<imp::GLMirrorFilter>) @extends gst_gl::GLFilter, gst_gl::GLBaseFilter, gst_base::BaseTransform, gst::Element, gst::Object;
+    }
+
+    impl GLMirrorFilter {
+        pub fn new(name: Option<&str>) -> Self {
+            glib::Object::builder().property("name", name).build()
         }
     }
 
+    mod imp {
+        use super::*;
 
-    println!("Active format:\n{}", format);
-    println!("Active parameters:\n{}", params);
-
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let dev = dev.write().unwrap();
-
-        // Setup a buffer stream
-        let mut stream = MmapStream::with_buffers(
-            &dev,
-            Type::VideoCapture,
-            buffer_count,
-        )
-        .unwrap();
-
-        loop {
-            let (buf, _) = stream.next().unwrap();
-            let data = match &format.fourcc.repr {
-                b"RGB3" => buf.to_vec(),
-                b"MJPG" => {
-                    // let mut decoder = jpeg_decoder::Decoder::new(buf);
-                    // decoder.decode().expect("failed to decode JPEG")
-                    buf.to_vec()
-                }
-                _ => panic!("invalid buffer pixelformat"),
-            };
-            tx.send(data).unwrap();
+        /// Private data consists of the transformation shader which is compiled
+        /// in advance to running the actual filter.
+        #[derive(Default)]
+        pub struct GLMirrorFilter {
+            shader: Mutex<Option<GLShader>>,
         }
-    });
 
-    // -------------------------------------------------------------------
-    // Initialize SDL with OpengGL context (and texture, program, etc)
+        impl GLMirrorFilter {
+            fn create_shader(
+                &self,
+                context: &GLContext,
+            ) -> Result<(), gst::LoggableError> {
+                let shader = GLShader::new(context);
+
+                let vertex = GLSLStage::new_default_vertex(context);
+                vertex.compile().unwrap();
+                shader.attach_unlocked(&vertex)?;
+
+                gst::debug!(
+                    CAT,
+                    imp: self,
+                    "Compiling fragment shader {}",
+                    FRAGMENT_SHADER
+                );
+
+                let fragment = GLSLStage::with_strings(
+                    context,
+                    glow::FRAGMENT_SHADER,
+                    // new_default_vertex is compiled with this version and profile:
+                    GLSLVersion::None,
+                    GLSLProfile::ES | GLSLProfile::COMPATIBILITY,
+                    &[FRAGMENT_SHADER],
+                );
+                fragment.compile().unwrap();
+                shader.attach_unlocked(&fragment)?;
+                shader.link().unwrap();
+
+                gst::debug!(
+                    CAT,
+                    imp: self,
+                    "Successfully compiled and linked {:?}",
+                    shader
+                );
+
+                *self.shader.lock().unwrap() = Some(shader);
+                Ok(())
+            }
+        }
+
+        // See `subclass.rs` for general documentation on creating a subclass. Extended
+        // information like element metadata have been omitted for brevity.
+        #[glib::object_subclass]
+        impl ObjectSubclass for GLMirrorFilter {
+            const NAME: &'static str = "RsGLMirrorFilter";
+            type Type = super::GLMirrorFilter;
+            type ParentType = gst_gl::GLFilter;
+        }
+
+        impl ElementImpl for GLMirrorFilter {}
+        impl GstObjectImpl for GLMirrorFilter {}
+        impl ObjectImpl for GLMirrorFilter {}
+        impl BaseTransformImpl for GLMirrorFilter {
+            const MODE: BaseTransformMode =
+                BaseTransformMode::NeverInPlace;
+            const PASSTHROUGH_ON_SAME_CAPS: bool = false;
+            const TRANSFORM_IP_ON_PASSTHROUGH: bool = false;
+        }
+        impl GLBaseFilterImpl for GLMirrorFilter {
+            fn gl_start(&self) -> Result<(), gst::LoggableError> {
+                let filter = self.obj();
+
+                // Create a shader when GL is started, knowing that the OpenGL context is
+                // available.
+                let context = GLBaseFilterExt::context(&*filter).unwrap();
+                self.create_shader(&context)?;
+                self.parent_gl_start()
+            }
+        }
+        impl GLFilterImpl for GLMirrorFilter {
+            const MODE: GLFilterMode = GLFilterMode::Texture;
+
+            fn filter_texture(
+                &self,
+                input: &gst_gl::GLMemory,
+                output: &gst_gl::GLMemory,
+            ) -> Result<(), gst::LoggableError> {
+                let filter = self.obj();
+
+                let shader = self.shader.lock().unwrap();
+                // Use the underlying filter implementation to transform the input texture into
+                // an output texture with the shader.
+                filter.render_to_target_with_shader(
+                    input,
+                    output,
+                    shader
+                        .as_ref()
+                        .expect("No shader, call `create_shader` first!"),
+                );
+                self.parent_filter_texture(input, output)
+            }
+        }
+    }
+}
+
+fn main() -> Result<(), Error> {
+    gst::init()?;
+    let glfilter = GLMirrorFilter::new(Some("foo"));
+
+    let pipeline = gst::Pipeline::default();
+    let src = gst::ElementFactory::make("videotestsrc").build()?;
+
+    let caps = gst_video::VideoCapsBuilder::new()
+        .features([gst_gl::CAPS_FEATURE_MEMORY_GL_MEMORY])
+        .format(gst_video::VideoFormat::Rgba)
+        .field("texture-target", "2D")
+        .build();
+
+    let appsink = gst_app::AppSink::builder()
+        .enable_last_sample(true)
+        .max_buffers(1)
+        .caps(&caps)
+        .build();
+
+    let glupload = gst::ElementFactory::make("glupload").build()?;
+
+    pipeline.add_many(&[
+        &src,
+        &glupload,
+        glfilter.as_ref(),
+        appsink.as_ref(),
+    ])?;
+    gst::Element::link_many(&[
+        &src,
+        &glupload,
+        glfilter.as_ref(),
+        appsink.as_ref(),
+    ])?;
+    let bus = pipeline
+        .bus()
+        .expect("Pipeline without bus. Shouldn't happen!");
+
     let sdl2 = sdl2::init().unwrap();
     let timer = sdl2.timer().unwrap();
-    let event_pump = Box::leak(Box::new(sdl2.event_pump().unwrap()));
+    let event_pump = sdl2.event_pump().unwrap();
     let video = sdl2.video().unwrap();
     let window = video
         .window("Limbo", 1280, 720)
@@ -94,182 +212,40 @@ fn main() -> io::Result<()> {
     gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
     gl_attr.set_context_version(4, 6);
 
-    let gl_context = window.gl_create_context().unwrap();
-    window.gl_make_current(&gl_context).unwrap();
-    Box::leak(Box::new(gl_context));
+    let windowed_context = window.gl_create_context().unwrap();
+    window.gl_make_current(&windowed_context).unwrap();
 
     let gl: glow::Context;
-    let tex;
-    let program;
     unsafe {
         gl = glow::Context::from_loader_function(|s| {
             video.gl_get_proc_address(s) as *const _
         });
-        let vao = gl.create_vertex_array().unwrap();
-        gl.bind_vertex_array(Some(vao));
-
-        tex = gl.create_texture().unwrap();
-        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGB as i32,
-            format.width as i32,
-            format.height as i32,
-            0,
-            glow::RGB,
-            glow::UNSIGNED_BYTE,
-            None,
-        );
-
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::REPEAT as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::REPEAT as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::NEAREST as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::NEAREST as i32,
-        );
-
-        program = gl.create_program().expect("Cannot create program");
-        let shaders_src = [
-            (
-                glow::VERTEX_SHADER,
-                "
-                #version 460 core
-
-                out vec2 vs_texcoord;
-
-                const vec2 RECT_IDX_TO_NDC[4] = vec2[4](
-                    vec2(-1.0, -1.0),
-                    vec2(1.0, -1.0),
-                    vec2(-1.0, 1.0),
-                    vec2(1.0, 1.0)
-                );
-
-                const vec2 RECT_IDX_TO_UV[4] = vec2[4](
-                    vec2(0.0, 0.0),
-                    vec2(1.0, 0.0),
-                    vec2(0.0, 1.0),
-                    vec2(1.0, 1.0)
-                );
-
-                void main() {
-                    vs_texcoord = RECT_IDX_TO_UV[gl_VertexID];
-                    vs_texcoord.y = 1.0 - vs_texcoord.y;
-                    gl_Position = vec4(RECT_IDX_TO_NDC[gl_VertexID], 0.0, 1.0);
-                }
-                ",
-            ),
-            (
-                glow::FRAGMENT_SHADER,
-                "
-                #version 460 core
-
-                in vec2 vs_texcoord;
-
-                out vec4 frag_color;
-
-                uniform sampler2D u_tex;
-
-                void main() {
-                    vec3 color = texture(u_tex, vs_texcoord).rgb;
-                    frag_color = vec4(color, 1.0);
-                }
-                ",
-            ),
-        ];
-
-        let mut shaders = Vec::with_capacity(shaders_src.len());
-        for (shader_type, shader_src) in shaders_src.iter() {
-            let shader = gl
-                .create_shader(*shader_type)
-                .expect("Cannot create shader");
-            gl.shader_source(shader, shader_src);
-            gl.compile_shader(shader);
-            if !gl.get_shader_compile_status(shader) {
-                panic!("{}", gl.get_shader_info_log(shader));
-            }
-            gl.attach_shader(program, shader);
-            shaders.push(shader);
-        }
-
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            panic!("{}", gl.get_program_info_log(program));
-        }
-
-        for shader in shaders {
-            gl.detach_shader(program, shader);
-            gl.delete_shader(shader);
-        }
+        gst_gl::GLContext::new_wrapped(video, gl, GLPlatform::CGL, 1);
     };
 
-    video.gl_set_swap_interval(1).unwrap();
 
-    // -------------------------------------------------------------------
-    // Start main loop
-    let mut prev_ticks = timer.ticks();
-    'main: loop {
-        let mut dt = (timer.ticks() - prev_ticks) as f32 / 1000.0;
-        prev_ticks = timer.ticks();
-        println!("{:?}", 1.0 / dt);
+    // let shared_context: gst_gl::GLContext = unsafe {
+    //     gst_gl::GLContext::new_wrapped(
+    //         &gl_display,
+    //         gl_context,
+    //         platform,
+    //         api,
+    //     )
+    // }
+    // .unwrap();
 
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => break 'main,
-                _ => {}
-            }
-        }
+    // shared_context
+    //     .activate(true)
+    //     .expect("Couldn't activate wrapped GL context");
 
-        let data = rx.recv().unwrap();
+    // shared_context.fill_info()?;
 
-        /*
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.viewport(0, 0, 640, 480);
-            gl.clear_color(0.0, 0.0, 0.0, 0.0);
-            gl.clear(glow::COLOR_BUFFER_BIT);
+    // let gl_context = shared_context.clone();
+    // let event_proxy = sync::Mutex::new(event_loop.create_proxy());
 
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGB as i32,
-                format.width as i32,
-                format.height as i32,
-                0,
-                glow::RGB,
-                glow::UNSIGNED_BYTE,
-                Some(data.as_slice()),
-            );
-
-            gl.use_program(Some(program));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(program, "u_tex").as_ref(),
-                0,
-            );
-
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-        }
-        */
-
-        window.gl_swap_window();
-    }
+    // App::new(Some(glfilter.as_ref()))
+    //     .and_then(main_loop)
+    //     .unwrap_or_else(|e| eprintln!("Error! {e}"))
 
     Ok(())
 }
