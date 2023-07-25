@@ -1,12 +1,12 @@
-use v4l::io::traits::OutputStream;
 use std::io;
+use std::io::Write;
 use std::sync::{mpsc, RwLock};
 use std::thread;
 use std::time::Instant;
-use std::io::Write;
+use v4l::io::traits::OutputStream;
 
+use jpeg_encoder::{ColorType, Encoder};
 use zune_jpeg::JpegDecoder;
-use jpeg_encoder::{Encoder, ColorType};
 
 use glow::HasContext;
 use sdl2::event::Event;
@@ -34,14 +34,18 @@ fn main() -> io::Result<()> {
     println!("src parameters:\n{}", src_params);
 
     let out = Device::with_path("/dev/video2").unwrap();
-    let out_format = Output::set_format(&out, &src_format)?;
+    let mut out_format = src_format.clone();
+    out_format.fourcc = FourCC::new(b"sRGB");
+    let out_format = Output::set_format(&out, &out_format)?;
     let out_params = Output::params(&out)?;
     println!("out capabilities:\n{}", out.query_caps()?);
     println!("out format:\n{}", out_format);
     println!("out parameters:\n{}", out_params);
 
-    let mut src_stream = MmapStream::with_buffers(&src, Type::VideoCapture, buffer_count)?;
-    let mut out_stream = MmapStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
+    let mut src_stream =
+        MmapStream::with_buffers(&src, Type::VideoCapture, buffer_count)?;
+    let mut out_stream =
+        MmapStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
 
     // -------------------------------------------------------------------
     // Initialize SDL with OpengGL context (and texture, program, etc)
@@ -189,14 +193,18 @@ fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut res_buf = [0; 640 * 480 * 4];
+    let mut res_buf = [128; 640 * 480 * 4];
     'main: loop {
-        let (src_buf, src_buf_meta) = CaptureStream::next(&mut src_stream).unwrap();
+        let (src_buf, src_buf_meta) =
+            CaptureStream::next(&mut src_stream).unwrap();
         let start = Instant::now();
         let mut decoder = JpegDecoder::new(src_buf);
         let mut pixels = decoder.decode().unwrap();
         println!("DECODE: {:?}", start.elapsed());
-        println!("FPS: {:?}", 1000.0 / (timer.ticks() - prev_ticks) as f32);
+        println!(
+            "FPS: {:?}",
+            1000.0 / (timer.ticks() - prev_ticks) as f32
+        );
         prev_ticks = timer.ticks();
 
         for event in event_pump.poll_iter() {
@@ -235,19 +243,20 @@ fn main() -> io::Result<()> {
 
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
-            gl.read_pixels(0, 0, video_width, video_height, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(pixels.as_mut_slice()));
-            let mut encoder = Encoder::new(pixels, 100);
-            encoder.encode(&res_buf, video_width as u16, video_height as u16, ColorType::Rgb).unwrap();
+            // gl.read_pixels(0, 0, video_width, video_height, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(pixels.as_mut_slice()));
+            // pixels.fill(255);
+            // let mut encoder = Encoder::new(pixels, 100);
+            // encoder.encode(&res_buf, video_width as u16, video_height as u16, ColorType::Rgb).unwrap();
         }
 
-        let src_buf = res_buf;
         window.gl_swap_window();
-        let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
-        let out_buf = &mut out_buf[0..src_buf.len()];
 
-        out_buf.copy_from_slice(&src_buf);
+        let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
+        let out_buf = &mut out_buf[0..res_buf.len()];
+
+        out_buf.copy_from_slice(&res_buf);
         out_buf_meta.field = 0;
-        out_buf_meta.bytesused = src_buf_meta.bytesused;
+        out_buf_meta.bytesused = res_buf.len() as u32;
     }
 
     Ok(())
