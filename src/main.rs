@@ -1,8 +1,11 @@
+use image;
 use std::io;
 use std::io::Write;
+use std::ops::Deref;
 use std::sync::{mpsc, RwLock};
 use std::thread;
 use std::time::Instant;
+use turbojpeg::*;
 use v4l::io::traits::OutputStream;
 
 use jpeg_encoder::{ColorType, Encoder};
@@ -39,7 +42,7 @@ fn main() -> io::Result<()> {
 
     let out = Device::with_path("/dev/video2").unwrap();
     let mut out_format = src_format.clone();
-    out_format.fourcc = FourCC::new(b"BGR4");
+    // out_format.fourcc = FourCC::new(b"BGR4");
     let out_format = Output::set_format(&out, &out_format)?;
     let out_params = Output::params(&out)?;
     println!("out capabilities:\n{}", out.query_caps()?);
@@ -162,7 +165,7 @@ fn main() -> io::Result<()> {
                     vec2 uv = vec2(vs_texcoord.x, 1.0 - vs_texcoord.y);
                     vec3 color = texture(u_tex, uv).rgb;
                     color *= vec3(1.0, 0.6, 0.6);
-                    frag_color = vec4(color.bgr, 1.0);
+                    frag_color = vec4(color, 1.0);
                 }
                 ",
             ),
@@ -263,11 +266,23 @@ fn main() -> io::Result<()> {
         window.gl_swap_window();
 
         let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
-        let out_buf = &mut out_buf[0..res_buf.len()];
+        let start = Instant::now();
 
-        out_buf.copy_from_slice(&res_buf);
-        out_buf_meta.field = 1;
-        out_buf_meta.bytesused = res_buf.len() as u32;
+        let img = turbojpeg::Image {
+            pixels: res_buf.as_slice(),
+            width: video_width as usize,
+            height: video_height as usize,
+            format: turbojpeg::PixelFormat::RGBA,
+            pitch: video_width as usize * 4,
+        };
+        let jpeg_data =
+            turbojpeg::compress(img, 100, turbojpeg::Subsamp::Sub2x2)
+                .unwrap();
+        let jpeg_data = jpeg_data.deref();
+        out_buf[..jpeg_data.len()].clone_from_slice(jpeg_data);
+        println!("ENCODE: {:?}", start.elapsed());
+        out_buf_meta.bytesused = out_buf.len() as u32;
+        out_buf_meta.field = 0;
     }
 
     Ok(())
