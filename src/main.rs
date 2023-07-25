@@ -60,7 +60,7 @@ fn main() -> io::Result<()> {
     let window = video
         .window("Limbo", video_width as u32, video_height as u32)
         .opengl()
-        .resizable()
+        .hidden()
         .build()
         .unwrap();
 
@@ -160,8 +160,9 @@ fn main() -> io::Result<()> {
 
                 void main() {
                     vec2 uv = vec2(vs_texcoord.x, 1.0 - vs_texcoord.y);
-                    vec3 color = texture(u_tex, uv).bgr;
-                    frag_color = vec4(color, 1.0);
+                    vec3 color = texture(u_tex, uv).rgb;
+                    color *= vec3(1.0, 0.6, 0.6);
+                    frag_color = vec4(color.bgr, 1.0);
                 }
                 ",
             ),
