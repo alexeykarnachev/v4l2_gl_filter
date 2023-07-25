@@ -26,6 +26,10 @@ fn main() -> io::Result<()> {
 
     let src = Device::with_path("/dev/video0").unwrap();
     let mut src_format = Capture::format(&src)?;
+    src_format.width = 640;
+    src_format.height = 480;
+    Capture::set_format(&src, &src_format)?;
+
     let mut src_params = Capture::params(&src)?;
     let video_width = src_format.width as i32;
     let video_height = src_format.height as i32;
@@ -35,7 +39,7 @@ fn main() -> io::Result<()> {
 
     let out = Device::with_path("/dev/video2").unwrap();
     let mut out_format = src_format.clone();
-    out_format.fourcc = FourCC::new(b"RGB4");
+    out_format.fourcc = FourCC::new(b"BGR4");
     let out_format = Output::set_format(&out, &out_format)?;
     let out_params = Output::params(&out)?;
     println!("out capabilities:\n{}", out.query_caps()?);
@@ -155,8 +159,8 @@ fn main() -> io::Result<()> {
                 uniform sampler2D u_tex;
 
                 void main() {
-                    vec3 color = texture(u_tex, vs_texcoord).rgb;
-                    color *= vec3(1.0, 0.0, 0.0);
+                    vec2 uv = vec2(vs_texcoord.x, 1.0 - vs_texcoord.y);
+                    vec3 color = texture(u_tex, uv).bgr;
                     frag_color = vec4(color, 1.0);
                 }
                 ",
@@ -193,12 +197,7 @@ fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut res_buf = [0; 640 * 480 * 4];
-    for i in 0..res_buf.len() {
-        if (i + 3) % 4 == 0 || (i + 2) % 4 == 0 {
-            res_buf[i] = 255;
-        }
-    }
+    let mut res_buf = vec![0u8; (video_width * video_height * 4) as usize];
 
     'main: loop {
         let (src_buf, src_buf_meta) =
@@ -232,7 +231,7 @@ fn main() -> io::Result<()> {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGB as i32,
+                glow::RGBA as i32,
                 video_width,
                 video_height,
                 0,
@@ -249,10 +248,15 @@ fn main() -> io::Result<()> {
 
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
-            // gl.read_pixels(0, 0, video_width, video_height, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(pixels.as_mut_slice()));
-            // pixels.fill(255);
-            // let mut encoder = Encoder::new(pixels, 100);
-            // encoder.encode(&res_buf, video_width as u16, video_height as u16, ColorType::Rgb).unwrap();
+            gl.read_pixels(
+                0,
+                0,
+                video_width,
+                video_height,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(res_buf.as_mut_slice()),
+            );
         }
 
         window.gl_swap_window();
@@ -261,7 +265,7 @@ fn main() -> io::Result<()> {
         let out_buf = &mut out_buf[0..res_buf.len()];
 
         out_buf.copy_from_slice(&res_buf);
-        out_buf_meta.field = 0;
+        out_buf_meta.field = 1;
         out_buf_meta.bytesused = res_buf.len() as u32;
     }
 
