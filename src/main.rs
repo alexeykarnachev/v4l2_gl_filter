@@ -35,7 +35,7 @@ fn main() -> io::Result<()> {
 
     let out = Device::with_path("/dev/video2").unwrap();
     let mut out_format = src_format.clone();
-    out_format.fourcc = FourCC::new(b"sRGB");
+    out_format.fourcc = FourCC::new(b"RGB4");
     let out_format = Output::set_format(&out, &out_format)?;
     let out_params = Output::params(&out)?;
     println!("out capabilities:\n{}", out.query_caps()?);
@@ -193,7 +193,13 @@ fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut res_buf = [128; 640 * 480 * 4];
+    let mut res_buf = [0; 640 * 480 * 4];
+    for i in 0..res_buf.len() {
+        if (i + 3) % 4 == 0 || (i + 2) % 4 == 0 {
+            res_buf[i] = 255;
+        }
+    }
+
     'main: loop {
         let (src_buf, src_buf_meta) =
             CaptureStream::next(&mut src_stream).unwrap();
