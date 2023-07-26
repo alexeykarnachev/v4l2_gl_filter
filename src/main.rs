@@ -13,10 +13,10 @@ use zune_jpeg::JpegDecoder;
 
 use glow::HasContext;
 use sdl2::event::Event;
-use v4l::buffer::{Type, Flags};
+use v4l::buffer::{Flags, Type};
 use v4l::io::traits::CaptureStream;
 use v4l::video::{Capture, Output};
-use v4l::Device;
+use v4l::{parameters::Capabilities, Device, Fraction};
 use v4l::{Format, FourCC};
 
 use v4l::prelude::*;
@@ -41,12 +41,14 @@ fn main() -> io::Result<()> {
     println!("src format:\n{}", src_format);
     println!("src parameters:\n{}", src_params);
 
-    let out = Device::with_path("/dev/video2").unwrap();
+    let mut out = Device::with_path("/dev/video2").unwrap();
     let mut out_format = src_format.clone();
     out_format.fourcc = FourCC::new(b"MJPG");
     // out_format.fourcc = FourCC::new(b"sRGB");
     let out_format = Output::set_format(&out, &out_format)?;
     let mut out_params = Output::params(&out)?;
+    out_params.interval = Fraction::new(1, 15);
+    out_params.capabilities = Capabilities::TIME_PER_FRAME;
     out_params = Output::set_params(&out, &out_params)?;
     println!("out capabilities:\n{}", out.query_caps()?);
     println!("out format:\n{}", out_format);
@@ -206,15 +208,17 @@ fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut out_pixels = vec![0u8; (video_width * video_height * 4) as usize];
+    let mut out_pixels =
+        vec![0u8; (video_width * video_height * 4) as usize];
+    let mut i = 0;
 
     'main: loop {
         let (src_buf, src_buf_meta) =
             CaptureStream::next(&mut src_stream).unwrap();
-        let start = Instant::now();
+        let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
+
         let mut decoder = JpegDecoder::new(src_buf);
         let mut pixels = decoder.decode().unwrap();
-        println!("DECODE: {:?}", start.elapsed());
         println!(
             "FPS: {:?}",
             1000.0 / (timer.ticks() - prev_ticks) as f32
@@ -270,26 +274,28 @@ fn main() -> io::Result<()> {
 
         window.gl_swap_window();
 
-        let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
-        let start = Instant::now();
+        if i % 1 == 0 {
+            let img = turbojpeg::Image {
+                pixels: out_pixels.as_slice(),
+                width: video_width as usize,
+                height: video_height as usize,
+                format: turbojpeg::PixelFormat::RGBA,
+                pitch: video_width as usize * 4,
+            };
+            let jpeg_data =
+                turbojpeg::compress(img, 100, turbojpeg::Subsamp::Sub2x2)
+                    .unwrap();
+            let jpeg_data = jpeg_data.deref();
+            out_buf.fill(0);
+            out_buf[..jpeg_data.len()].clone_from_slice(jpeg_data);
+            out_buf_meta.bytesused = jpeg_data.len() as u32;
+            out.flush()?;
+        }
 
-        let img = turbojpeg::Image {
-            pixels: out_pixels.as_slice(),
-            width: video_width as usize,
-            height: video_height as usize,
-            format: turbojpeg::PixelFormat::RGBA,
-            pitch: video_width as usize * 4,
-        };
-        let jpeg_data =
-            turbojpeg::compress(img, 100, turbojpeg::Subsamp::Sub2x2)
-                .unwrap();
-        let jpeg_data = jpeg_data.deref();
-        out_buf.fill(0);
-        out_buf[..jpeg_data.len()].clone_from_slice(jpeg_data);
-        println!("ENCODE: {:?}", start.elapsed());
-        out_buf_meta.bytesused = jpeg_data.len() as u32;
-        out_buf_meta.field = 0;
-        out_buf_meta.flags = Flags::KEYFRAME;
+        i += 1;
+
+        // out_buf_meta.field = 0;
+        // out_buf_meta.flags = Flags::KEYFRAME;
 
         // out_buf[..out_pixels.len()].clone_from_slice(out_pixels.as_slice());
         // out_buf_meta.bytesused = out_pixels.len() as u32;
