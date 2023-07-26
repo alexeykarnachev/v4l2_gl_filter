@@ -13,7 +13,7 @@ use zune_jpeg::JpegDecoder;
 
 use glow::HasContext;
 use sdl2::event::Event;
-use v4l::buffer::Type;
+use v4l::buffer::{Type, Flags};
 use v4l::io::traits::CaptureStream;
 use v4l::video::{Capture, Output};
 use v4l::Device;
@@ -29,6 +29,7 @@ fn main() -> io::Result<()> {
 
     let src = Device::with_path("/dev/video0").unwrap();
     let mut src_format = Capture::format(&src)?;
+    src_format.fourcc = FourCC::new(b"MJPG");
     src_format.width = 640;
     src_format.height = 480;
     Capture::set_format(&src, &src_format)?;
@@ -42,9 +43,11 @@ fn main() -> io::Result<()> {
 
     let out = Device::with_path("/dev/video2").unwrap();
     let mut out_format = src_format.clone();
-    // out_format.fourcc = FourCC::new(b"BGR4");
+    out_format.fourcc = FourCC::new(b"MJPG");
+    // out_format.fourcc = FourCC::new(b"sRGB");
     let out_format = Output::set_format(&out, &out_format)?;
-    let out_params = Output::params(&out)?;
+    let mut out_params = Output::params(&out)?;
+    out_params = Output::set_params(&out, &out_params)?;
     println!("out capabilities:\n{}", out.query_caps()?);
     println!("out format:\n{}", out_format);
     println!("out parameters:\n{}", out_params);
@@ -53,6 +56,8 @@ fn main() -> io::Result<()> {
         MmapStream::with_buffers(&src, Type::VideoCapture, buffer_count)?;
     let mut out_stream =
         MmapStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
+    let _ = OutputStream::next(&mut out_stream)?;
+    // UserptrStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
 
     // -------------------------------------------------------------------
     // Initialize SDL with OpengGL context (and texture, program, etc)
@@ -201,7 +206,7 @@ fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut res_buf = vec![0u8; (video_width * video_height * 4) as usize];
+    let mut out_pixels = vec![0u8; (video_width * video_height * 4) as usize];
 
     'main: loop {
         let (src_buf, src_buf_meta) =
@@ -259,7 +264,7 @@ fn main() -> io::Result<()> {
                 video_height,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(res_buf.as_mut_slice()),
+                glow::PixelPackData::Slice(out_pixels.as_mut_slice()),
             );
         }
 
@@ -269,7 +274,7 @@ fn main() -> io::Result<()> {
         let start = Instant::now();
 
         let img = turbojpeg::Image {
-            pixels: res_buf.as_slice(),
+            pixels: out_pixels.as_slice(),
             width: video_width as usize,
             height: video_height as usize,
             format: turbojpeg::PixelFormat::RGBA,
@@ -279,10 +284,15 @@ fn main() -> io::Result<()> {
             turbojpeg::compress(img, 100, turbojpeg::Subsamp::Sub2x2)
                 .unwrap();
         let jpeg_data = jpeg_data.deref();
+        out_buf.fill(0);
         out_buf[..jpeg_data.len()].clone_from_slice(jpeg_data);
         println!("ENCODE: {:?}", start.elapsed());
-        out_buf_meta.bytesused = out_buf.len() as u32;
+        out_buf_meta.bytesused = jpeg_data.len() as u32;
         out_buf_meta.field = 0;
+        out_buf_meta.flags = Flags::KEYFRAME;
+
+        // out_buf[..out_pixels.len()].clone_from_slice(out_pixels.as_slice());
+        // out_buf_meta.bytesused = out_pixels.len() as u32;
     }
 
     Ok(())
