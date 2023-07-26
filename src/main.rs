@@ -131,51 +131,9 @@ fn main() -> io::Result<()> {
         let shaders_src = [
             (
                 glow::VERTEX_SHADER,
-                "
-                #version 460 core
-
-                out vec2 vs_texcoord;
-
-                const vec2 RECT_IDX_TO_NDC[4] = vec2[4](
-                    vec2(-1.0, -1.0),
-                    vec2(1.0, -1.0),
-                    vec2(-1.0, 1.0),
-                    vec2(1.0, 1.0)
-                );
-
-                const vec2 RECT_IDX_TO_UV[4] = vec2[4](
-                    vec2(0.0, 0.0),
-                    vec2(1.0, 0.0),
-                    vec2(0.0, 1.0),
-                    vec2(1.0, 1.0)
-                );
-
-                void main() {
-                    vs_texcoord = RECT_IDX_TO_UV[gl_VertexID];
-                    vs_texcoord.y = 1.0 - vs_texcoord.y;
-                    gl_Position = vec4(RECT_IDX_TO_NDC[gl_VertexID], 0.0, 1.0);
-                }
-                ",
+                include_str!("../shaders/screen_rect.vert"),
             ),
-            (
-                glow::FRAGMENT_SHADER,
-                "
-                #version 460 core
-
-                in vec2 vs_texcoord;
-
-                out vec4 frag_color;
-
-                uniform sampler2D u_tex;
-
-                void main() {
-                    vec2 uv = vec2(vs_texcoord.x, 1.0 - vs_texcoord.y);
-                    vec3 color = texture(u_tex, uv).rgb;
-                    color *= vec3(1.0, 0.6, 0.6);
-                    frag_color = vec4(color, 1.0);
-                }
-                ",
-            ),
+            (glow::FRAGMENT_SHADER, include_str!("../shaders/main.frag")),
         ];
 
         let mut shaders = Vec::with_capacity(shaders_src.len());
