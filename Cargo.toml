@@ -1,16 +1,18 @@
 [package]
-name = "limbo"
+name = "v4l_gl_filter"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-glow = "0.12.3"
-image = "0.24.6"
-jpeg-encoder = { version = "0.5.1", features = ["simd"] }
-sdl2 = "0.35.2"
-turbojpeg = { version = "0.5.3", features = ["image"] }
-v4l = "0.14.0"
 zune-jpeg = "0.3.17"
+turbojpeg = { version = "0.5.3", features = ["image"] }
+glow = "0.12.3"
+sdl2 = "0.35.2"
+v4l = "0.14.0"
 
 [profile.dev.package.zune-jpeg]
 opt-level = 3
+
+[[bin]]
+name = "v4l_gl_filter"
+path = "src/main.rs"

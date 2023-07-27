@@ -1,6 +1,6 @@
 use glow::HasContext;
-use std::time::{Duration, Instant};
-use sdl2::{video::Window, Sdl};
+use sdl2::video::Window;
+use std::time::Instant;
 use turbojpeg::OwnedBuf;
 use zune_jpeg::JpegDecoder;
 
@@ -18,8 +18,9 @@ pub struct GLFilter {
 }
 
 impl GLFilter {
-    pub fn new(sdl2: &Sdl, width: u32, height: u32) -> Self {
-        let video = sdl2.video().unwrap();
+    pub fn new(width: u32, height: u32) -> Self {
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
         let window = video
             .window("Limbo", width, height)
             .opengl()
@@ -88,7 +89,7 @@ impl GLFilter {
                 ),
                 (
                     glow::FRAGMENT_SHADER,
-                    include_str!("../shaders/main.frag"),
+                    include_str!("../shaders/filter.frag"),
                 ),
             ];
 
@@ -160,13 +161,22 @@ impl GLFilter {
             );
 
             gl.use_program(Some(self.program));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(self.program, "u_video_tex").as_ref(),
-                0,
-            );
             gl.uniform_1_f32(
                 gl.get_uniform_location(self.program, "u_time").as_ref(),
                 self.time.elapsed().as_millis() as f32,
+            );
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "u_width").as_ref(),
+                self.width as f32,
+            );
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "u_height").as_ref(),
+                self.height as f32,
+            );
+            gl.uniform_1_i32(
+                gl.get_uniform_location(self.program, "u_video_tex")
+                    .as_ref(),
+                0,
             );
 
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);

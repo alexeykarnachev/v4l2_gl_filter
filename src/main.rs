@@ -1,5 +1,5 @@
-use std::io;
 use std::ops::Deref;
+use std::{env, io};
 
 use v4l::buffer::Type::{VideoCapture, VideoOutput};
 use v4l::io::traits::CaptureStream;
@@ -13,10 +13,19 @@ use gl_filter::GLFilter;
 mod gl_filter;
 
 fn main() -> io::Result<()> {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 3 {
+        println!(
+            "ERROR: Invalid number of arguments.\n\
+            Usage: v4l_gl_filter /dev/video<src_id> /dev/video<out_id>",
+        );
+        std::process::exit(1);
+    }
+
     // -------------------------------------------------------------------
     // Initialize source and output video streams
-    let src_dev_path = "/dev/video0";
-    let out_dev_path = "/dev/video2";
+    let src_dev_path = args[1].clone();
+    let out_dev_path = args[2].clone();
 
     let src = Device::with_path(src_dev_path)?;
     let mut src_format = Capture::format(&src)?;
@@ -34,26 +43,13 @@ fn main() -> io::Result<()> {
     let mut out_stream = MmapStream::with_buffers(&out, VideoOutput, 4)?;
 
     // -------------------------------------------------------------------
-    // Initialize SDL with OpengGL context (and texture, program, etc)
-    let sdl2 = sdl2::init().unwrap();
-    let timer = sdl2.timer().unwrap();
-    let mut filter =
-        GLFilter::new(&sdl2, src_format.width, src_format.height);
-
-    // -------------------------------------------------------------------
     // Start main loop
-    let mut prev_ticks = timer.ticks();
+    let mut filter = GLFilter::new(src_format.width, src_format.height);
 
     loop {
         let (src_buf, _) = CaptureStream::next(&mut src_stream)?;
         let (out_buf, out_meta) = OutputStream::next(&mut out_stream)?;
         let out_jpeg = filter.run(src_buf);
-
-        println!(
-            "FPS: {:?}",
-            1000.0 / (timer.ticks() - prev_ticks) as f32
-        );
-        prev_ticks = timer.ticks();
 
         out_buf[..out_jpeg.len()].clone_from_slice(out_jpeg.deref());
         out_meta.bytesused = out_jpeg.len() as u32;
