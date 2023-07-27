@@ -1,182 +1,59 @@
-use image;
+mod renderer;
+
+use renderer::GLFilter;
 use std::io;
 use std::io::Write;
 use std::ops::Deref;
-use std::sync::{mpsc, RwLock};
-use std::thread;
-use std::time::Instant;
-use turbojpeg::*;
 use v4l::io::traits::OutputStream;
-
-use jpeg_encoder::{ColorType, Encoder};
 use zune_jpeg::JpegDecoder;
 
 use glow::HasContext;
 use sdl2::event::Event;
-use v4l::buffer::{Flags, Type};
+use v4l::buffer::Type::{VideoCapture, VideoOutput};
 use v4l::io::traits::CaptureStream;
 use v4l::video::{Capture, Output};
-use v4l::{parameters::Capabilities, Device, Fraction};
-use v4l::{Format, FourCC};
+use v4l::{Device, FourCC};
 
 use v4l::prelude::*;
-use v4l::video::capture::Parameters;
 
 fn main() -> io::Result<()> {
     // -------------------------------------------------------------------
-    // Initialize video device stream thread
-    let buffer_count = 4;
+    // Initialize source and output video streams
+    let src_dev_path = "/dev/video0";
+    let out_dev_path = "/dev/video2";
 
-    let src = Device::with_path("/dev/video0").unwrap();
+    let src = Device::with_path(src_dev_path)?;
     let mut src_format = Capture::format(&src)?;
     src_format.fourcc = FourCC::new(b"MJPG");
     src_format.width = 640;
     src_format.height = 480;
-    Capture::set_format(&src, &src_format)?;
+    src_format = Capture::set_format(&src, &src_format)?;
 
-    let mut src_params = Capture::params(&src)?;
-    let video_width = src_format.width as i32;
-    let video_height = src_format.height as i32;
-    println!("src capabilities:\n{}", src.query_caps()?);
-    println!("src format:\n{}", src_format);
-    println!("src parameters:\n{}", src_params);
-
-    let mut out = Device::with_path("/dev/video2").unwrap();
+    let out = Device::with_path(out_dev_path)?;
     let mut out_format = src_format.clone();
     out_format.fourcc = FourCC::new(b"MJPG");
-    // out_format.fourcc = FourCC::new(b"sRGB");
-    let out_format = Output::set_format(&out, &out_format)?;
-    let mut out_params = Output::params(&out)?;
-    out_params.interval = Fraction::new(1, 15);
-    out_params.capabilities = Capabilities::TIME_PER_FRAME;
-    out_params = Output::set_params(&out, &out_params)?;
-    println!("out capabilities:\n{}", out.query_caps()?);
-    println!("out format:\n{}", out_format);
-    println!("out parameters:\n{}", out_params);
+    _ = Output::set_format(&out, &out_format)?;
 
-    let mut src_stream =
-        MmapStream::with_buffers(&src, Type::VideoCapture, buffer_count)?;
-    let mut out_stream =
-        MmapStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
-    let _ = OutputStream::next(&mut out_stream)?;
-    // UserptrStream::with_buffers(&out, Type::VideoOutput, buffer_count)?;
+    let mut src_stream = MmapStream::with_buffers(&src, VideoCapture, 4)?;
+    let mut out_stream = MmapStream::with_buffers(&out, VideoOutput, 4)?;
 
     // -------------------------------------------------------------------
     // Initialize SDL with OpengGL context (and texture, program, etc)
     let sdl2 = sdl2::init().unwrap();
     let timer = sdl2.timer().unwrap();
     let event_pump = Box::leak(Box::new(sdl2.event_pump().unwrap()));
-    let video = sdl2.video().unwrap();
-    let window = video
-        .window("Limbo", video_width as u32, video_height as u32)
-        .opengl()
-        .hidden()
-        .build()
-        .unwrap();
-
-    let gl_attr = video.gl_attr();
-    gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
-    gl_attr.set_context_version(4, 6);
-
-    let gl_context = window.gl_create_context().unwrap();
-    window.gl_make_current(&gl_context).unwrap();
-    Box::leak(Box::new(gl_context));
-
-    let gl: glow::Context;
-    let tex;
-    let program;
-    unsafe {
-        gl = glow::Context::from_loader_function(|s| {
-            video.gl_get_proc_address(s) as *const _
-        });
-        let vao = gl.create_vertex_array().unwrap();
-        gl.bind_vertex_array(Some(vao));
-
-        tex = gl.create_texture().unwrap();
-        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGB as i32,
-            video_width,
-            video_height,
-            0,
-            glow::RGB,
-            glow::UNSIGNED_BYTE,
-            None,
-        );
-
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::REPEAT as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::REPEAT as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::NEAREST as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::NEAREST as i32,
-        );
-
-        program = gl.create_program().expect("Cannot create program");
-        let shaders_src = [
-            (
-                glow::VERTEX_SHADER,
-                include_str!("../shaders/screen_rect.vert"),
-            ),
-            (glow::FRAGMENT_SHADER, include_str!("../shaders/main.frag")),
-        ];
-
-        let mut shaders = Vec::with_capacity(shaders_src.len());
-        for (shader_type, shader_src) in shaders_src.iter() {
-            let shader = gl
-                .create_shader(*shader_type)
-                .expect("Cannot create shader");
-            gl.shader_source(shader, shader_src);
-            gl.compile_shader(shader);
-            if !gl.get_shader_compile_status(shader) {
-                panic!("{}", gl.get_shader_info_log(shader));
-            }
-            gl.attach_shader(program, shader);
-            shaders.push(shader);
-        }
-
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            panic!("{}", gl.get_program_info_log(program));
-        }
-
-        for shader in shaders {
-            gl.detach_shader(program, shader);
-            gl.delete_shader(shader);
-        }
-    };
-
-    video.gl_set_swap_interval(1).unwrap();
+    let mut filter =
+        GLFilter::new(&sdl2, src_format.width, src_format.height);
 
     // -------------------------------------------------------------------
     // Start main loop
     let mut prev_ticks = timer.ticks();
-    let mut out_pixels =
-        vec![0u8; (video_width * video_height * 4) as usize];
-    let mut i = 0;
 
     'main: loop {
-        let (src_buf, src_buf_meta) =
-            CaptureStream::next(&mut src_stream).unwrap();
-        let (out_buf, out_buf_meta) = OutputStream::next(&mut out_stream)?;
+        let (src_buf, _) = CaptureStream::next(&mut src_stream)?;
+        let (out_buf, out_meta) = OutputStream::next(&mut out_stream)?;
+        let out_jpeg = filter.run(src_buf);
 
-        let mut decoder = JpegDecoder::new(src_buf);
-        let mut pixels = decoder.decode().unwrap();
         println!(
             "FPS: {:?}",
             1000.0 / (timer.ticks() - prev_ticks) as f32
@@ -190,73 +67,8 @@ fn main() -> io::Result<()> {
             }
         }
 
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.viewport(0, 0, video_width, video_height);
-            gl.clear_color(0.0, 0.0, 0.0, 0.0);
-            gl.clear(glow::COLOR_BUFFER_BIT);
-
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                video_width,
-                video_height,
-                0,
-                glow::RGB,
-                glow::UNSIGNED_BYTE,
-                Some(pixels.as_slice()),
-            );
-
-            gl.use_program(Some(program));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(program, "u_tex").as_ref(),
-                0,
-            );
-
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-
-            gl.read_pixels(
-                0,
-                0,
-                video_width,
-                video_height,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(out_pixels.as_mut_slice()),
-            );
-        }
-
-        window.gl_swap_window();
-
-        if i % 1 == 0 {
-            let img = turbojpeg::Image {
-                pixels: out_pixels.as_slice(),
-                width: video_width as usize,
-                height: video_height as usize,
-                format: turbojpeg::PixelFormat::RGBA,
-                pitch: video_width as usize * 4,
-            };
-            let jpeg_data =
-                turbojpeg::compress(img, 100, turbojpeg::Subsamp::Sub2x2)
-                    .unwrap();
-            let jpeg_data = jpeg_data.deref();
-            out_buf.fill(0);
-            out_buf[..jpeg_data.len()].clone_from_slice(jpeg_data);
-            out_buf_meta.bytesused = jpeg_data.len() as u32;
-            out.flush()?;
-        }
-
-        i += 1;
-
-        // out_buf_meta.field = 0;
-        // out_buf_meta.flags = Flags::KEYFRAME;
-
-        // out_buf[..out_pixels.len()].clone_from_slice(out_pixels.as_slice());
-        // out_buf_meta.bytesused = out_pixels.len() as u32;
+        out_buf[..out_jpeg.len()].clone_from_slice(out_jpeg.deref());
+        out_meta.bytesused = out_jpeg.len() as u32;
     }
 
     Ok(())
