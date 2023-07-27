@@ -1,9 +1,12 @@
 use glow::HasContext;
+use std::time::{Duration, Instant};
 use sdl2::{video::Window, Sdl};
 use turbojpeg::OwnedBuf;
 use zune_jpeg::JpegDecoder;
 
 pub struct GLFilter {
+    time: Instant,
+
     window: Window,
     gl: glow::Context,
     tex: glow::Texture,
@@ -59,12 +62,12 @@ impl GLFilter {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
-                glow::REPEAT as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_T,
-                glow::REPEAT as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -119,6 +122,7 @@ impl GLFilter {
         let out_pixels = vec![0u8; (width * height * 4) as usize];
 
         Self {
+            time: Instant::now(),
             window,
             gl,
             tex,
@@ -157,8 +161,12 @@ impl GLFilter {
 
             gl.use_program(Some(self.program));
             gl.uniform_1_i32(
-                gl.get_uniform_location(self.program, "u_tex").as_ref(),
+                gl.get_uniform_location(self.program, "u_video_tex").as_ref(),
                 0,
+            );
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "u_time").as_ref(),
+                self.time.elapsed().as_millis() as f32,
             );
 
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
