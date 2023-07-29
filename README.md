@@ -1,4 +1,4 @@
-# V4L OpenGL Filter
+# V4L2 OpenGL Filter
 A simple application of the OpenGL shader to the Linux video device (webcamera)
 
 ## Quick Start
@@ -11,7 +11,7 @@ sudo modprobe v4l2loopback
 
 3. Build and run the applicatoin:
 ```bash
-cargo build --release && ./target/release/v4l_gl_filter /dev/video0 /dev/video2
+cargo build --release && ./target/release/v4l2_gl_filter /dev/video0 /dev/video2
 ```
 In your case the device ids (`video0`, `video2`) may differ. Select the appropriate ones (the first device is your main camera, the second one is your virtual camera, created by v4l2loopback module)
 

@@ -1,5 +1,5 @@
 [package]
-name = "v4l_gl_filter"
+name = "v4l2_gl_filter"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,5 +14,5 @@ v4l = "0.14.0"
 opt-level = 3
 
 [[bin]]
-name = "v4l_gl_filter"
+name = "v4l2_gl_filter"
 path = "src/main.rs"

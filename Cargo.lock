@@ -456,7 +456,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "v4l_gl_filter"
+name = "v4l2_gl_filter"
 version = "0.1.0"
 dependencies = [
  "glow",
