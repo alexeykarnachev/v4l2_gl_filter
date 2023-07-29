@@ -14,7 +14,9 @@ uniform sampler2D u_video_tex;
 void main() {
     vec2 uv = vec2(vs_texcoord.x, 1.0 - vs_texcoord.y);
     vec3 color = texture(u_video_tex, uv).rgb;
-    color *= vec3(uv, 0.5 * (sin(10.0 * u_time / 1000.0) + 1.0));
+
+    float lumin = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = vec3(floor(lumin + 0.5));
 
     frag_color = vec4(color, 1.0);
 }

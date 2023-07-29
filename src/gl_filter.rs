@@ -4,12 +4,16 @@ use std::time::Instant;
 use turbojpeg::OwnedBuf;
 use zune_jpeg::JpegDecoder;
 
+const SCREEN_RECT_VERT_SRC: &str =
+    include_str!("../shaders/screen_rect.vert");
+const FILTER_FRAG_SRC: &str = include_str!("../shaders/filter.frag");
+
 pub struct GLFilter {
     time: Instant,
 
     window: Window,
     gl: glow::Context,
-    tex: glow::Texture,
+    video_tex: glow::Texture,
     program: glow::Program,
     width: u32,
     height: u32,
@@ -37,96 +41,26 @@ impl GLFilter {
         Box::leak(Box::new(gl_context));
 
         let gl: glow::Context;
-        let tex;
-        let program;
         unsafe {
             gl = glow::Context::from_loader_function(|s| {
                 video.gl_get_proc_address(s) as *const _
             });
             let vao = gl.create_vertex_array().unwrap();
             gl.bind_vertex_array(Some(vao));
-
-            tex = gl.create_texture().unwrap();
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGB as i32,
-                width as i32,
-                height as i32,
-                0,
-                glow::RGB,
-                glow::UNSIGNED_BYTE,
-                None,
-            );
-
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_BORDER as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_BORDER as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::NEAREST as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST as i32,
-            );
-
-            program = gl.create_program().expect("Cannot create program");
-            let shaders_src = [
-                (
-                    glow::VERTEX_SHADER,
-                    include_str!("../shaders/screen_rect.vert"),
-                ),
-                (
-                    glow::FRAGMENT_SHADER,
-                    include_str!("../shaders/filter.frag"),
-                ),
-            ];
-
-            let mut shaders = Vec::with_capacity(shaders_src.len());
-            for (shader_type, shader_src) in shaders_src.iter() {
-                let shader = gl
-                    .create_shader(*shader_type)
-                    .expect("Cannot create shader");
-                gl.shader_source(shader, shader_src);
-                gl.compile_shader(shader);
-                if !gl.get_shader_compile_status(shader) {
-                    panic!("{}", gl.get_shader_info_log(shader));
-                }
-                gl.attach_shader(program, shader);
-                shaders.push(shader);
-            }
-
-            gl.link_program(program);
-            if !gl.get_program_link_status(program) {
-                panic!("{}", gl.get_program_info_log(program));
-            }
-
-            for shader in shaders {
-                gl.detach_shader(program, shader);
-                gl.delete_shader(shader);
-            }
         };
 
         video.gl_set_swap_interval(1).unwrap();
 
+        let program =
+            create_program(&gl, SCREEN_RECT_VERT_SRC, FILTER_FRAG_SRC);
+        let video_tex = create_texture(&gl, width, height);
         let out_pixels = vec![0u8; (width * height * 4) as usize];
 
         Self {
             time: Instant::now(),
             window,
             gl,
-            tex,
+            video_tex,
             program,
             width,
             height,
@@ -145,7 +79,7 @@ impl GLFilter {
             gl.clear_color(0.0, 0.0, 0.0, 0.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
 
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.tex));
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.video_tex));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
 
             gl.tex_image_2d(
@@ -208,5 +142,90 @@ impl GLFilter {
         .unwrap();
 
         out_jpeg
+    }
+}
+
+fn create_program(
+    gl: &glow::Context,
+    vert_src: &str,
+    frag_src: &str,
+) -> glow::Program {
+    unsafe {
+        let program = gl.create_program().expect("Cannot create program");
+        let shaders_src = [
+            (glow::VERTEX_SHADER, vert_src),
+            (glow::FRAGMENT_SHADER, frag_src),
+        ];
+
+        let mut shaders = Vec::with_capacity(shaders_src.len());
+        for (shader_type, shader_src) in shaders_src.iter() {
+            let shader = gl
+                .create_shader(*shader_type)
+                .expect("Cannot create shader");
+            gl.shader_source(shader, shader_src);
+            gl.compile_shader(shader);
+            if !gl.get_shader_compile_status(shader) {
+                panic!("{}", gl.get_shader_info_log(shader));
+            }
+            gl.attach_shader(program, shader);
+            shaders.push(shader);
+        }
+
+        gl.link_program(program);
+        if !gl.get_program_link_status(program) {
+            panic!("{}", gl.get_program_info_log(program));
+        }
+
+        for shader in shaders {
+            gl.detach_shader(program, shader);
+            gl.delete_shader(shader);
+        }
+
+        program
+    }
+}
+
+fn create_texture(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+) -> glow::Texture {
+    unsafe {
+        let tex = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGB as i32,
+            width as i32,
+            height as i32,
+            0,
+            glow::RGB,
+            glow::UNSIGNED_BYTE,
+            None,
+        );
+
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_BORDER as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_BORDER as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::NEAREST as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::NEAREST as i32,
+        );
+
+        tex
     }
 }
